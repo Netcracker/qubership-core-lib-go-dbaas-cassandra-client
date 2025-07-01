@@ -54,8 +54,7 @@ type DatabaseClientTestSuite struct {
 
 func (suite *DatabaseClientTestSuite) SetupSuite() {
 	serviceloader.Register(1, &security.DummyToken{})
-	serviceloader.Register(1, &security.TenantContextObject{})
-	
+
 	StartMockServer()
 	os.Setenv(dbaasAgentUrlProperty, GetMockServerUrl())
 
