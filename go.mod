@@ -2,7 +2,7 @@ module github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3
 
 go 1.23
 
-toolchain go1.24.2
+toolchain go1.25.1
 
 require (
 	github.com/docker/go-connections v0.5.0
