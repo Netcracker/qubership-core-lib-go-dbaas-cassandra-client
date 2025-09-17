@@ -9,7 +9,7 @@ require (
 	github.com/gocql/gocql v1.7.0
 	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.0.2
 	github.com/netcracker/qubership-core-lib-go/v3 v3.1.0
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.35.0
 )
 
@@ -33,7 +33,6 @@ require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
 	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
