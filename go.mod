@@ -5,8 +5,8 @@ go 1.25.3
 require (
 	github.com/docker/go-connections v0.6.0
 	github.com/gocql/gocql v1.7.0
-	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.0.3
-	github.com/netcracker/qubership-core-lib-go/v3 v3.1.1
+	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.0.4
+	github.com/netcracker/qubership-core-lib-go/v3 v3.2.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.39.0
 )
@@ -74,7 +74,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.0.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/sync v0.10.0 // indirect
+	golang.org/x/sync v0.15.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
