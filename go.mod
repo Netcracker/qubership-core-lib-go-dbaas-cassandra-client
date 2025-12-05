@@ -4,7 +4,7 @@ go 1.25.4
 
 require (
 	github.com/docker/go-connections v0.6.0
-	github.com/gocql/gocql v1.7.0
+	github.com/gocql/gocql/v2 v2.0.0
 	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.0.8
 	github.com/netcracker/qubership-core-lib-go/v3 v3.2.4
 	github.com/stretchr/testify v1.11.1
