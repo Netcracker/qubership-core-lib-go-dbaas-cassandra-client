@@ -152,6 +152,8 @@ github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.2.0 h1:6vRVp
 github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.2.0/go.mod h1:EUP8d9XScjXpSdOgA5mjOZWm6ozbAZjHldeGotwxWEE=
 github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.3.0 h1:2+Mbl37ej1AffPoLo0+8inDMLf9tbN4nujKgZsHkdjo=
 github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.3.0/go.mod h1:mv+8uKbaaOQlRJDvz31PEaUdLhT5s4uB1hTyb1x/4m4=
+github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.3.1 h1:CwHdS9WFX9eDNmaBmuq5wlFTSZYJ6E+n9La3WPfyDns=
+github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.3.1/go.mod h1:bpliqaoWhPjgoPHR9FgH6b/OZBXtjAoXvnXEQVdR72U=
 github.com/netcracker/qubership-core-lib-go/v3 v3.3.1 h1:rvBOLY8BtCO+0YxBFurl+sd11tda6I7Nalq3SjPNMdg=
 github.com/netcracker/qubership-core-lib-go/v3 v3.3.1/go.mod h1:komq6cK5bGZx5fwnwIo2YZGOXTEITVJ3xCt4VLL4CcA=
 github.com/netcracker/qubership-core-lib-go/v3 v3.4.0 h1:PtVq5JWR8Cy+ymBJfbI5LjH4oedBUttebJ5+r3ap6wA=
@@ -160,6 +162,8 @@ github.com/netcracker/qubership-core-lib-go/v3 v3.5.0 h1:uKuETXXHZ54Zvak5L6zy8eF
 github.com/netcracker/qubership-core-lib-go/v3 v3.5.0/go.mod h1:tXcabbpYNAvm4sSU2i95mRsQo76mvUqJgbX0lMgtF1U=
 github.com/netcracker/qubership-core-lib-go/v3 v3.6.0 h1:qk1pe+mUtfOQAw/ohph5PvSRW6OPQLzht4BzDa3Wf0Y=
 github.com/netcracker/qubership-core-lib-go/v3 v3.6.0/go.mod h1:tXcabbpYNAvm4sSU2i95mRsQo76mvUqJgbX0lMgtF1U=
+github.com/netcracker/qubership-core-lib-go/v3 v3.7.0 h1:+AbsWpSZ4qtHcUqSP6+M7j7J6MXDw/r/v7SAEojlpGc=
+github.com/netcracker/qubership-core-lib-go/v3 v3.7.0/go.mod h1:tXcabbpYNAvm4sSU2i95mRsQo76mvUqJgbX0lMgtF1U=
 github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
 github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
 github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
