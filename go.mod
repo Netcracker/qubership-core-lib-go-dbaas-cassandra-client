@@ -5,8 +5,8 @@ go 1.26.2
 require (
 	github.com/docker/go-connections v0.6.0
 	github.com/gocql/gocql v1.7.0
-	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.3.4
-	github.com/netcracker/qubership-core-lib-go/v3 v3.7.3
+	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.4.0
+	github.com/netcracker/qubership-core-lib-go/v3 v3.8.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.41.0
 )
