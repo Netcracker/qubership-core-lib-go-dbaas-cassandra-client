@@ -48,7 +48,7 @@ type DatabaseClientTestSuite struct {
 	cassandraConfigFile *os.File
 	cassandraContainer  testcontainers.Container
 	cassandraAddress    string
-	cassandraPort       nat.Port
+	cassandraPort       int
 	controlSession      *gocql.Session
 }
 
@@ -141,7 +141,7 @@ func (suite *DatabaseClientTestSuite) TestCassandraDbClient_GetCassandraDatabase
 		"username":      testContainerUser,
 		"password":      testContainerPassword,
 		"contactPoints": []interface{}{suite.cassandraAddress},
-		"port":          float64(suite.cassandraPort.Int()),
+		"port":          float64(suite.cassandraPort),
 		"keyspace":      testContainerKeyspace,
 	}
 
@@ -202,7 +202,7 @@ func (suite *DatabaseClientTestSuite) prepareTestContainer(ctx context.Context) 
 
 	req := testcontainers.ContainerRequest{
 		Image:        "cassandra:4.1.4",
-		ExposedPorts: []string{fmt.Sprintf("%d:%s", 49200, cassandraNatPort.Port())},
+		ExposedPorts: []string{string(cassandraNatPort)},
 		WaitingFor:   NewCassandraSessionWaitStrategy(3*time.Minute, time.Second),
 		Mounts:       testcontainers.Mounts(testcontainers.BindMount(suite.cassandraConfigFile.Name(), cassandraConfigLocation)),
 	}
@@ -225,10 +225,11 @@ func (suite *DatabaseClientTestSuite) prepareTestContainer(ctx context.Context) 
 	if err != nil {
 		suite.T().Fatal(err)
 	}
-	suite.cassandraPort, err = suite.cassandraContainer.MappedPort(ctx, cassandraNatPort)
+	mappedPort, err := suite.cassandraContainer.MappedPort(ctx, string(cassandraNatPort))
 	if err != nil {
 		suite.T().Fatal(err)
 	}
+	suite.cassandraPort = int(mappedPort.Num())
 
 	os.Unsetenv("TESTCONTAINERS_RYUK_DISABLED")
 }
@@ -239,7 +240,7 @@ func (suite *DatabaseClientTestSuite) initDatabase() {
 	statements := strings.Split(initScript, ";")
 
 	clusterConfig := gocql.NewCluster(suite.cassandraAddress)
-	clusterConfig.Port = suite.cassandraPort.Int()
+	clusterConfig.Port = suite.cassandraPort
 	clusterConfig.Authenticator = gocql.PasswordAuthenticator{
 		Username: "cassandra",
 		Password: "cassandra",
@@ -272,7 +273,7 @@ func (suite *DatabaseClientTestSuite) checkConnectionIsWorking(session *gocql.Se
 func (suite DatabaseClientTestSuite) cassandraDbaasResponseHandler(passwordProvider func() string) []byte {
 	connectionProperties := map[string]interface{}{
 		"contactPoints": []string{suite.cassandraAddress},
-		"port":          suite.cassandraPort.Int(),
+		"port":          suite.cassandraPort,
 		"keyspace":      testContainerKeyspace,
 		"password":      passwordProvider(),
 		"username":      testContainerUser,
@@ -299,7 +300,7 @@ func (suite *DatabaseClientTestSuite) changePassword(newPassword string) {
 	if err = suite.cassandraContainer.Start(ctx); err != nil {
 		suite.T().Fatal(err)
 	}
-	err = waitForCassandraStart(ctx, time.Minute, time.Second, suite.cassandraAddress, suite.cassandraPort.Int())
+	err = waitForCassandraStart(ctx, time.Minute, time.Second, suite.cassandraAddress, suite.cassandraPort)
 	if err != nil {
 		suite.T().Error(err)
 	}
@@ -359,11 +360,11 @@ func (c cassandraSessionWaitStrategy) WaitUntilReady(ctx context.Context, target
 	if err != nil {
 		return
 	}
-	port, err := target.MappedPort(ctx, cassandraNatPort)
+	port, err := target.MappedPort(ctx, string(cassandraNatPort))
 	if err != nil {
 		return
 	}
-	return waitForCassandraStart(ctx, c.waitDuration, c.checkInterval, host, port.Int())
+	return waitForCassandraStart(ctx, c.waitDuration, c.checkInterval, host, int(port.Num()))
 }
 
 func NewCassandraSessionWaitStrategy(waitDuration time.Duration, checkInterval time.Duration) *cassandraSessionWaitStrategy {
