@@ -260,3 +260,4 @@ func main() {
     logger.Info("Cassandra database version: %s", cassandraVersion)
 }
 ```
+
