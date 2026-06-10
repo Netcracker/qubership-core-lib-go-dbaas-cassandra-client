@@ -198,7 +198,7 @@ func (suite *DatabaseClientTestSuite) prepareTestContainer(ctx context.Context) 
 
 	req := testcontainers.ContainerRequest{
 		Image:        "cassandra:4.1.4",
-		ExposedPorts: []string{fmt.Sprintf("%d:%s/tcp", 49200, cassandraPort)},
+		ExposedPorts: []string{cassandraPort + "/tcp"},
 		WaitingFor:   NewCassandraSessionWaitStrategy(3*time.Minute, time.Second),
 		Mounts:       testcontainers.Mounts(testcontainers.BindMount(suite.cassandraConfigFile.Name(), cassandraConfigLocation)),
 	}
