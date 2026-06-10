@@ -296,6 +296,11 @@ func (suite *DatabaseClientTestSuite) changePassword(newPassword string) {
 	if err = suite.cassandraContainer.Start(ctx); err != nil {
 		suite.T().Fatal(err)
 	}
+	mappedPort, err := suite.cassandraContainer.MappedPort(ctx, cassandraPort)
+	if err != nil {
+		suite.T().Fatal(err)
+	}
+	suite.cassandraPort = int(mappedPort.Num())
 	err = waitForCassandraStart(ctx, time.Minute, time.Second, suite.cassandraAddress, suite.cassandraPort)
 	if err != nil {
 		suite.T().Error(err)
