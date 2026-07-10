@@ -1,10 +1,14 @@
 package cassandradbaas
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -12,14 +16,17 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
-	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
-	"github.com/netcracker/qubership-core-lib-go/v3/security"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
+	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/cache"
 	basemodel "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model/rest"
 	. "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/testutils"
+	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
+	"github.com/netcracker/qubership-core-lib-go/v3/security"
+	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -36,7 +43,6 @@ const (
 	testConnectionQuery       = "SELECT release_version FROM system.local"
 	changePasswordQueryFormat = "ALTER USER %s WITH PASSWORD '%s'"
 )
-
 
 type DatabaseClientTestSuite struct {
 	suite.Suite
@@ -388,4 +394,245 @@ func (p *TestLogicalDbProvider) GetOrCreateDb(dbType string, classifier map[stri
 func (p *TestLogicalDbProvider) GetConnection(dbType string, classifier map[string]interface{}, params rest.BaseDbParams) (map[string]interface{}, error) {
 	p.providerCalls++
 	return p.ConnectionProperties, nil
+}
+
+// TestGetSession_RespectsContextCancellation verifies that GetSession returns when
+// the caller's context is cancelled, proving that the context is propagated all the
+// way through the public API down to the blocking query inside isPasswordValid.
+func (suite *DatabaseClientTestSuite) TestGetSession_RespectsContextCancellation() {
+	done := make(chan struct{})
+	defer close(done)
+
+	session := newCQLMockSession(suite.T(), done)
+
+	staticClassifier := map[string]interface{}{"scope": "service"}
+	classifierFn := func(ctx context.Context) map[string]interface{} { return staticClassifier }
+	key := cache.NewKey(DbType, classifierFn(context.Background()))
+	client := &cassandraDbClient{
+		clusterConfig: gocql.NewCluster(),
+		cassandraCache: &cache.DbaaSCache{
+			LogicalDbCache: map[cache.Key]interface{}{key: session},
+		},
+		params: model.DbParams{Classifier: classifierFn},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	resultCh := make(chan error, 1)
+	go func() { _, err := client.GetSession(ctx); resultCh <- err }()
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		suite.T().Fatal("Context timeout is not taken into account by GetSession")
+	}
+}
+
+// newCQLMockSession starts a minimal in-process CQL mock server, waits for gocql's
+// CreateSession to complete, and returns the connected session. The mock goroutines
+// exit cleanly when done is closed.
+func newCQLMockSession(t *testing.T, done <-chan struct{}) *gocql.Session {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serveCQLMock(conn, done)
+		}
+	}()
+	addr := listener.Addr().(*net.TCPAddr)
+	cfg := gocql.NewCluster(addr.IP.String())
+	cfg.Port = addr.Port
+	cfg.NumConns = 1
+	cfg.DisableInitialHostLookup = true
+	cfg.ConnectTimeout = 5 * time.Second
+	session, err := cfg.CreateSession()
+	require.NoError(t, err)
+	t.Cleanup(session.Close)
+	return session
+}
+
+// TestWaitForSessionReconnect_RespectsContextCancellation verifies that
+// waitForSessionReconnect returns when the caller's context is cancelled,
+// proving that WithContext(ctx) is propagated to the query.
+func (suite *DatabaseClientTestSuite) TestWaitForSessionReconnect_RespectsContextCancellation() {
+	done := make(chan struct{})
+	defer close(done)
+
+	session := newCQLMockSession(suite.T(), done)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	resultCh := make(chan error, 1)
+	go func() { resultCh <- waitForSessionReconnect(ctx, session, 5*time.Second) }()
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		suite.T().Fatal("Context timeout is not taken into account by waitForSessionReconnect")
+	}
+}
+
+// serveCQLMock speaks enough of the CQL native protocol to let gocql complete
+// CreateSession, then hangs on EXECUTE of checkConnectionQuery without responding.
+// Goroutines exit cleanly when done is closed.
+func serveCQLMock(conn net.Conn, done <-chan struct{}) {
+	defer conn.Close()
+	header := make([]byte, 9)
+	prepared := make(map[string]string)
+	var nextPreparedID uint32 = 1
+
+	for {
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return
+		}
+		opcode := header[4]
+		stream := binary.BigEndian.Uint16(header[2:4])
+		respVersion := header[0]&0x7F | 0x80
+		bodyLen := int(binary.BigEndian.Uint32(header[5:9]))
+		body := make([]byte, bodyLen)
+		if bodyLen > 0 {
+			if _, err := io.ReadFull(conn, body); err != nil {
+				return
+			}
+		}
+		switch opcode {
+		case 0x05: // OPTIONS → SUPPORTED
+			cqlWriteSupportedFrame(conn, respVersion, stream)
+		case 0x01: // STARTUP → READY
+			cqlWriteReadyFrame(conn, respVersion, stream)
+		case 0x0B: // REGISTER → READY
+			cqlWriteReadyFrame(conn, respVersion, stream)
+		case 0x07: // QUERY
+			q := strings.TrimSpace(cqlReadLongString(body))
+			if strings.Contains(strings.ToLower(q), "system.local") {
+				cqlWriteSystemLocalFrame(conn, respVersion, stream)
+			} else {
+				cqlWriteEmptyRowsFrame(conn, respVersion, stream)
+			}
+		case 0x09: // PREPARE → PREPARED
+			q := strings.TrimSpace(cqlReadLongString(body))
+			idBytes := make([]byte, 4)
+			binary.BigEndian.PutUint32(idBytes, nextPreparedID)
+			prepared[string(idBytes)] = q
+			nextPreparedID++
+			cqlWritePreparedFrame(conn, respVersion, stream, idBytes)
+		case 0x0A: // EXECUTE — hang if it is checkConnectionQuery, exercising WithContext fix
+			if len(body) >= 2 {
+				idLen := int(binary.BigEndian.Uint16(body[0:2]))
+				if idLen > 0 && len(body) >= 2+idLen {
+					if strings.EqualFold(strings.TrimSpace(prepared[string(body[2:2+idLen])]), checkConnectionQuery) {
+						<-done
+						return
+					}
+				}
+			}
+			cqlWriteEmptyRowsFrame(conn, respVersion, stream)
+		}
+	}
+}
+
+func cqlReadLongString(body []byte) string {
+	if len(body) < 4 {
+		return ""
+	}
+	n := int(binary.BigEndian.Uint32(body[0:4]))
+	if len(body) < 4+n {
+		return ""
+	}
+	return string(body[4 : 4+n])
+}
+
+func cqlWriteSupportedFrame(conn net.Conn, version byte, stream uint16) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, uint16(1))
+	cqlShortString(&body, "CQL_VERSION")
+	binary.Write(&body, binary.BigEndian, uint16(1))
+	cqlShortString(&body, "3.0.0")
+	cqlWriteFrame(conn, version, 0x06, stream, body.Bytes())
+}
+
+func cqlWriteReadyFrame(conn net.Conn, version byte, stream uint16) {
+	cqlWriteFrame(conn, version, 0x02, stream, nil)
+}
+
+func cqlWriteEmptyRowsFrame(conn net.Conn, version byte, stream uint16) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, int32(2)) // kind = Rows
+	binary.Write(&body, binary.BigEndian, int32(0)) // flags
+	binary.Write(&body, binary.BigEndian, int32(0)) // columns_count
+	binary.Write(&body, binary.BigEndian, int32(0)) // rows_count
+	cqlWriteFrame(conn, version, 0x08, stream, body.Bytes())
+}
+
+func cqlWriteSystemLocalFrame(conn net.Conn, version byte, stream uint16) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, int32(2))      // kind = Rows
+	binary.Write(&body, binary.BigEndian, int32(0x0001)) // flags = Global_tables_spec
+	binary.Write(&body, binary.BigEndian, int32(5))      // columns_count
+	cqlShortString(&body, "system")
+	cqlShortString(&body, "local")
+	cqlShortString(&body, "host_id")
+	binary.Write(&body, binary.BigEndian, uint16(0x000C)) // uuid
+	cqlShortString(&body, "data_center")
+	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // varchar
+	cqlShortString(&body, "rack")
+	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // varchar
+	cqlShortString(&body, "tokens")
+	binary.Write(&body, binary.BigEndian, uint16(0x0020)) // list
+	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // list element type: varchar
+	cqlShortString(&body, "partitioner")
+	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // varchar
+	binary.Write(&body, binary.BigEndian, int32(1))       // rows_count = 1
+	binary.Write(&body, binary.BigEndian, int32(16))      // host_id: 16-byte UUID
+	body.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+	cqlWriteBytes(&body, []byte("datacenter1"))
+	cqlWriteBytes(&body, []byte("rack1"))
+	binary.Write(&body, binary.BigEndian, int32(4)) // tokens: empty list (4-byte length prefix)
+	binary.Write(&body, binary.BigEndian, int32(0)) // element count = 0
+	cqlWriteBytes(&body, []byte("org.apache.cassandra.dht.Murmur3Partitioner"))
+	cqlWriteFrame(conn, version, 0x08, stream, body.Bytes())
+}
+
+// cqlWritePreparedFrame returns a minimal PREPARED result so gocql can cache
+// the statement and later send EXECUTE frames for it.
+func cqlWritePreparedFrame(conn net.Conn, version byte, stream uint16, id []byte) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, int32(4))        // kind = Prepared
+	binary.Write(&body, binary.BigEndian, uint16(len(id))) // prepared ID (short bytes)
+	body.Write(id)
+	// params metadata: flags=0, colCount=0, pkeyCount=0
+	binary.Write(&body, binary.BigEndian, int32(0))
+	binary.Write(&body, binary.BigEndian, int32(0))
+	binary.Write(&body, binary.BigEndian, int32(0))
+	// result metadata: flags=0, colCount=0
+	binary.Write(&body, binary.BigEndian, int32(0))
+	binary.Write(&body, binary.BigEndian, int32(0))
+	cqlWriteFrame(conn, version, 0x08, stream, body.Bytes())
+}
+
+func cqlWriteBytes(buf *bytes.Buffer, data []byte) {
+	binary.Write(buf, binary.BigEndian, int32(len(data)))
+	buf.Write(data)
+}
+
+func cqlShortString(buf *bytes.Buffer, s string) {
+	binary.Write(buf, binary.BigEndian, uint16(len(s)))
+	buf.WriteString(s)
+}
+
+func cqlWriteFrame(conn net.Conn, version, opcode byte, stream uint16, body []byte) {
+	frame := make([]byte, 9+len(body))
+	frame[0] = version
+	frame[1] = 0x00
+	binary.BigEndian.PutUint16(frame[2:4], stream)
+	frame[4] = opcode
+	binary.BigEndian.PutUint32(frame[5:9], uint32(len(body)))
+	copy(frame[9:], body)
+	conn.Write(frame) //nolint:errcheck
 }
