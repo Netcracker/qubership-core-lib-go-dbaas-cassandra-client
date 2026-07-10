@@ -483,30 +483,21 @@ func (suite *DatabaseClientTestSuite) TestWaitForSessionReconnect_RespectsContex
 // Goroutines exit cleanly when done is closed.
 func serveCQLMock(conn net.Conn, done <-chan struct{}) {
 	defer conn.Close()
-	header := make([]byte, 9)
 	prepared := make(map[string]string)
 	var nextPreparedID uint32 = 1
 
 	for {
-		if _, err := io.ReadFull(conn, header); err != nil {
+		version, stream, opcode, body, err := cqlReadFrame(conn)
+		if err != nil {
 			return
 		}
-		opcode := header[4]
-		stream := binary.BigEndian.Uint16(header[2:4])
-		respVersion := header[0]&0x7F | 0x80
-		bodyLen := int(binary.BigEndian.Uint32(header[5:9]))
-		body := make([]byte, bodyLen)
-		if bodyLen > 0 {
-			if _, err := io.ReadFull(conn, body); err != nil {
-				return
-			}
-		}
+		respVersion := version&0x7F | 0x80
 		switch opcode {
-		case 0x05: // OPTIONS → SUPPORTED
+		case 0x05: // OPTIONS -> SUPPORTED
 			cqlWriteSupportedFrame(conn, respVersion, stream)
-		case 0x01: // STARTUP → READY
+		case 0x01: // STARTUP -> READY
 			cqlWriteReadyFrame(conn, respVersion, stream)
-		case 0x0B: // REGISTER → READY
+		case 0x0B: // REGISTER -> READY
 			cqlWriteReadyFrame(conn, respVersion, stream)
 		case 0x07: // QUERY
 			q := strings.TrimSpace(cqlReadLongString(body))
@@ -515,28 +506,45 @@ func serveCQLMock(conn net.Conn, done <-chan struct{}) {
 			} else {
 				cqlWriteEmptyRowsFrame(conn, respVersion, stream)
 			}
-		case 0x09: // PREPARE → PREPARED
+		case 0x09: // PREPARE -> PREPARED
 			q := strings.TrimSpace(cqlReadLongString(body))
 			idBytes := make([]byte, 4)
 			binary.BigEndian.PutUint32(idBytes, nextPreparedID)
 			prepared[string(idBytes)] = q
 			nextPreparedID++
 			cqlWritePreparedFrame(conn, respVersion, stream, idBytes)
-		case 0x0A: // EXECUTE — hang if it is checkConnectionQuery, exercising WithContext fix
-			if len(body) >= 2 {
-				idLen := int(binary.BigEndian.Uint16(body[0:2]))
-				if idLen > 0 && len(body) >= 2+idLen {
-					if strings.EqualFold(strings.TrimSpace(prepared[string(body[2:2+idLen])]), checkConnectionQuery) {
-						<-done
-						return
-					}
-				}
+		case 0x0A: // EXECUTE
+			if strings.EqualFold(strings.TrimSpace(cqlPreparedQuery(body, prepared)), checkConnectionQuery) {
+				<-done
+				return
 			}
 			cqlWriteEmptyRowsFrame(conn, respVersion, stream)
 		}
 	}
 }
 
+func cqlReadFrame(conn net.Conn) (byte, uint16, byte, []byte, error) {
+	header := make([]byte, 9)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return 0, 0, 0, nil, err
+	}
+	body := make([]byte, int(binary.BigEndian.Uint32(header[5:9])))
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return 0, 0, 0, nil, err
+	}
+	return header[0], binary.BigEndian.Uint16(header[2:4]), header[4], body, nil
+}
+
+func cqlPreparedQuery(body []byte, prepared map[string]string) string {
+	if len(body) < 2 {
+		return ""
+	}
+	idLen := int(binary.BigEndian.Uint16(body[0:2]))
+	if idLen == 0 || len(body) < 2+idLen {
+		return ""
+	}
+	return prepared[string(body[2:2+idLen])]
+}
 func cqlReadLongString(body []byte) string {
 	if len(body) < 4 {
 		return ""
