@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -431,18 +432,20 @@ func (suite *DatabaseClientTestSuite) TestGetSession_RespectsContextCancellation
 // newCQLMockSession starts a minimal in-process CQL mock server, waits for gocql's
 // CreateSession to complete, and returns the connected session. The mock goroutines
 // exit cleanly when done is closed.
-func newCQLMockSession(t *testing.T, done <-chan struct{}) *gocql.Session {
+func newCQLMockSession(t *testing.T, done <-chan struct{}, failFirstCheck ...bool) *gocql.Session {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { listener.Close() })
+	var checkFailed atomic.Bool
+	failFirst := len(failFirstCheck) > 0 && failFirstCheck[0]
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			go serveCQLMock(conn, done)
+			go serveCQLMock(conn, done, failFirst, &checkFailed)
 		}
 	}()
 	addr := listener.Addr().(*net.TCPAddr)
@@ -478,10 +481,22 @@ func (suite *DatabaseClientTestSuite) TestWaitForSessionReconnect_RespectsContex
 	}
 }
 
+func TestWaitForSessionReconnect_RetriesWithContext(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+
+	session := newCQLMockSession(t, done, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	require.NoError(t, waitForSessionReconnect(ctx, session, time.Second))
+}
+
 // serveCQLMock speaks enough of the CQL native protocol to let gocql complete
 // CreateSession, then hangs on EXECUTE of checkConnectionQuery without responding.
 // Goroutines exit cleanly when done is closed.
-func serveCQLMock(conn net.Conn, done <-chan struct{}) {
+func serveCQLMock(conn net.Conn, done <-chan struct{}, failFirstCheck bool, checkFailed *atomic.Bool) {
 	defer conn.Close()
 	prepared := make(map[string]string)
 	var nextPreparedID uint32 = 1
@@ -514,13 +529,28 @@ func serveCQLMock(conn net.Conn, done <-chan struct{}) {
 			nextPreparedID++
 			cqlWritePreparedFrame(conn, respVersion, stream, idBytes)
 		case 0x0A: // EXECUTE
-			if strings.EqualFold(strings.TrimSpace(cqlPreparedQuery(body, prepared)), checkConnectionQuery) {
-				<-done
+			if !cqlHandleExecute(conn, respVersion, stream, body, prepared, done, failFirstCheck, checkFailed) {
 				return
 			}
-			cqlWriteEmptyRowsFrame(conn, respVersion, stream)
 		}
 	}
+}
+
+func cqlHandleExecute(conn net.Conn, version byte, stream uint16, body []byte, prepared map[string]string, done <-chan struct{}, failFirstCheck bool, checkFailed *atomic.Bool) bool {
+	if !strings.EqualFold(strings.TrimSpace(cqlPreparedQuery(body, prepared)), checkConnectionQuery) {
+		cqlWriteEmptyRowsFrame(conn, version, stream)
+		return true
+	}
+	if failFirstCheck {
+		if checkFailed.CompareAndSwap(false, true) {
+			cqlWriteErrorFrame(conn, version, stream, "temporary connection error")
+		} else {
+			cqlWriteEmptyRowsFrame(conn, version, stream)
+		}
+		return true
+	}
+	<-done
+	return false
 }
 
 func cqlReadFrame(conn net.Conn) (byte, uint16, byte, []byte, error) {
@@ -565,6 +595,12 @@ func cqlWriteSupportedFrame(conn net.Conn, version byte, stream uint16) {
 	cqlWriteFrame(conn, version, 0x06, stream, body.Bytes())
 }
 
+func cqlWriteErrorFrame(conn net.Conn, version byte, stream uint16, message string) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, int32(0))
+	cqlShortString(&body, message)
+	cqlWriteFrame(conn, version, 0x00, stream, body.Bytes())
+}
 func cqlWriteReadyFrame(conn net.Conn, version byte, stream uint16) {
 	cqlWriteFrame(conn, version, 0x02, stream, nil)
 }
