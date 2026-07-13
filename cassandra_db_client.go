@@ -3,7 +3,6 @@ package cassandradbaas
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -36,7 +35,8 @@ func (c *cassandraDbClient) GetSession(ctx context.Context) (*gocql.Session, err
 		return nil, err
 	}
 	session := sessionRaw.(*gocql.Session)
-	if !c.isPasswordValid(ctx, session) {
+	if validationErr := c.isPasswordValid(ctx, session); validationErr != nil {
+		logger.Warnf("Password validation failed: %v", validationErr)
 		session.Close()
 		c.cassandraCache.Delete(key)
 		sessionRaw, err = c.cassandraCache.Cache(key, c.createNewSession(ctx, classifier))
@@ -119,10 +119,6 @@ func (c *cassandraDbClient) getNewPassword(ctx context.Context, classifier map[s
 	return "", errors.New("connection string doesn't contain password field")
 }
 
-func (c *cassandraDbClient) isPasswordValid(ctx context.Context, session *gocql.Session) bool {
-	err := session.Query(checkConnectionQuery).WithContext(ctx).Exec()
-	if err != nil {
-		return !strings.Contains(err.Error(), "no hosts available in the pool")
-	}
-	return true
+func (c *cassandraDbClient) isPasswordValid(ctx context.Context, session *gocql.Session) error {
+	return session.Query(checkConnectionQuery).WithContext(ctx).Exec()
 }

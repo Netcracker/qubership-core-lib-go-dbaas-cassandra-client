@@ -409,12 +409,15 @@ func (suite *DatabaseClientTestSuite) TestGetSession_RespectsContextCancellation
 	staticClassifier := map[string]interface{}{"scope": "service"}
 	classifierFn := func(ctx context.Context) map[string]interface{} { return staticClassifier }
 	key := cache.NewKey(DbType, classifierFn(context.Background()))
+	dbaasClient := &validationErrorDbaasClient{err: context.DeadlineExceeded}
+
 	client := &cassandraDbClient{
 		clusterConfig: gocql.NewCluster(),
 		cassandraCache: &cache.DbaaSCache{
 			LogicalDbCache: map[cache.Key]interface{}{key: session},
 		},
-		params: model.DbParams{Classifier: classifierFn},
+		dbaasClient: dbaasClient,
+		params:      model.DbParams{Classifier: classifierFn},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -423,10 +426,36 @@ func (suite *DatabaseClientTestSuite) TestGetSession_RespectsContextCancellation
 	resultCh := make(chan error, 1)
 	go func() { _, err := client.GetSession(ctx); resultCh <- err }()
 	select {
-	case <-resultCh:
+	case err := <-resultCh:
+		require.ErrorIs(suite.T(), err, context.DeadlineExceeded)
+		require.Equal(suite.T(), 1, dbaasClient.getOrCreateCalls)
 	case <-time.After(2 * time.Second):
 		suite.T().Fatal("Context timeout is not taken into account by GetSession")
 	}
+}
+
+type validationErrorDbaasClient struct {
+	err              error
+	getOrCreateCalls int
+}
+
+func (c *validationErrorDbaasClient) GetOrCreateDb(
+	context.Context,
+	string,
+	map[string]interface{},
+	rest.BaseDbParams,
+) (*basemodel.LogicalDb, error) {
+	c.getOrCreateCalls++
+	return nil, c.err
+}
+
+func (c *validationErrorDbaasClient) GetConnection(
+	context.Context,
+	string,
+	map[string]interface{},
+	rest.BaseDbParams,
+) (map[string]interface{}, error) {
+	return nil, c.err
 }
 
 // newCQLMockSession starts a minimal in-process CQL mock server, waits for gocql's
