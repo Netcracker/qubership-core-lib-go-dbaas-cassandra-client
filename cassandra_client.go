@@ -6,7 +6,7 @@ import (
 	"github.com/netcracker/qubership-core-lib-go/v3/logging"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/cache"
-	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v4/model"
 )
 
 var logger logging.Logger

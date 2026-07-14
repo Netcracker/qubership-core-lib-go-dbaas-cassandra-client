@@ -1,10 +1,10 @@
 package cassandradbaas
 
 import (
-	"github.com/gocql/gocql"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/cache"
-	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v4/model"
 )
 
 type Database interface {
