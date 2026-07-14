@@ -22,7 +22,7 @@ This module provides convenient way of interaction with **cassandra** databases 
 
 To get cassandra dbaas client do:
 ```go
-    go get github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client
+    go get github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v4
 ```
 
 ## Usage
@@ -219,9 +219,9 @@ import (
     dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
     "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model"
     "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model/rest"
-	cassandradbaas "github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client"
+	cassandradbaas "github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v4"
 	"github.com/netcracker/qubership-core-lib-go/v3/context-propagation/baseprovider/tenant"
-    "github.com/gocql/gocql"
+    gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 var logger logging.Logger

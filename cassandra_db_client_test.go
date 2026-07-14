@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gocql/gocql"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/cache"
 	basemodel "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model/rest"
 	. "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/testutils"
-	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v4/model"
 	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
 	"github.com/netcracker/qubership-core-lib-go/v3/security"
 	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
@@ -483,6 +483,7 @@ func newCQLMockSession(t *testing.T, done <-chan struct{}, failFirstCheck ...boo
 	cfg.NumConns = 1
 	cfg.DisableInitialHostLookup = true
 	cfg.ConnectTimeout = 5 * time.Second
+	cfg.ProtoVersion = 4
 	session, err := cfg.CreateSession()
 	require.NoError(t, err)
 	t.Cleanup(session.Close)
