@@ -3,14 +3,13 @@ package cassandradbaas
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
-	"github.com/netcracker/qubership-core-lib-go/v3/utils"
 	"github.com/gocql/gocql"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/cache"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go/v3/utils"
 )
 
 const (
@@ -36,7 +35,8 @@ func (c *cassandraDbClient) GetSession(ctx context.Context) (*gocql.Session, err
 		return nil, err
 	}
 	session := sessionRaw.(*gocql.Session)
-	if !c.isPasswordValid(session) {
+	if validationErr := c.isPasswordValid(ctx, session); validationErr != nil {
+		logger.Warnf("Password validation failed: %v", validationErr)
 		session.Close()
 		c.cassandraCache.Delete(key)
 		sessionRaw, err = c.cassandraCache.Cache(key, c.createNewSession(ctx, classifier))
@@ -55,13 +55,13 @@ func waitForSessionReconnect(ctx context.Context, session *gocql.Session, waitTi
 	ctx, cancelContext := context.WithTimeout(ctx, waitTime)
 	checkInterval := 100 * time.Millisecond
 	defer cancelContext()
-	err = session.Query(checkConnectionQuery).Exec()
+	err = session.Query(checkConnectionQuery).WithContext(ctx).Exec()
 	for err != nil {
 		select {
 		case <-ctx.Done():
 			return err
 		case <-time.After(checkInterval):
-			err = session.Query(checkConnectionQuery).Exec()
+			err = session.Query(checkConnectionQuery).WithContext(ctx).Exec()
 		}
 	}
 	return err
@@ -119,10 +119,6 @@ func (c *cassandraDbClient) getNewPassword(ctx context.Context, classifier map[s
 	return "", errors.New("connection string doesn't contain password field")
 }
 
-func (c *cassandraDbClient) isPasswordValid(session *gocql.Session) bool {
-	err := session.Query(checkConnectionQuery).Exec()
-	if err != nil {
-		return !strings.Contains(err.Error(), "no hosts available in the pool")
-	}
-	return true
+func (c *cassandraDbClient) isPasswordValid(ctx context.Context, session *gocql.Session) error {
+	return session.Query(checkConnectionQuery).WithContext(ctx).Exec()
 }
