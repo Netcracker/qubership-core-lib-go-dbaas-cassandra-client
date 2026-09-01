@@ -85,9 +85,15 @@ func (c *cassandraDbClient) createNewSession(ctx context.Context, classifier map
 		}
 		if tls, ok := logicalDb.ConnectionProperties["tls"].(bool); ok && tls {
 			logger.Infof("Connection to cassandra db with classifier %+v will be secured", classifier)
-			c.clusterConfig.SslOpts = &gocql.SslOptions{
-				Config: utils.GetTlsConfig(),
+
+			tlsConfig := utils.GetTlsConfig()
+			if len(contactPoints) > 0 {
+				// gocql re-dials nodes discovered via system.peers by their IP and, when ServerName is
+				// empty, puts that IP into it. The cassandra cert has DNS SANs only, so pin ServerName
+				// to the contact point.
+				tlsConfig.ServerName = contactPoints[0]
 			}
+			c.clusterConfig.SslOpts = &gocql.SslOptions{Config: tlsConfig}
 		}
 
 		c.clusterConfig.Hosts = contactPoints
