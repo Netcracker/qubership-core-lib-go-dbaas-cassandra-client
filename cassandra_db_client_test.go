@@ -44,6 +44,50 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// initTlsForTestBinary generates a self-signed certificate, writes it to a
+// temporary directory, points utils at that directory, enables TLS and forces
+// utils.GetTlsConfig to load the certificate into memory.  The temporary
+// directory is removed immediately afterwards: the loaded certificate is
+// retained in memory by the utils package for the rest of the binary run.
+//
+// Must be called from TestMain before m.Run so that utils.configOnce fires with
+// tlsEnabled=true. Any test that calls dbaasbase.NewDbaaSPool (→ NewDbaasRestClient
+// → utils.GetClient → utils.GetTlsConfig) would otherwise freeze the config with no
+// certificates, causing the TLS mock handshake to fail.
+func initTlsForTestBinary() error {
+	certPEM, keyPEM, err := buildDnsOnlyCert()
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "cassandra-tls-init")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{
+		{utils.TlsCrt, certPEM},
+		{utils.TlsKey, keyPEM},
+		{utils.CaCrt, certPEM}, // self-signed: cert doubles as its own CA
+	} {
+		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o600); err != nil {
+			return err
+		}
+	}
+	if err := os.Setenv(utils.TlsPathEnv, dir); err != nil {
+		return err
+	}
+	utils.SetTlsEnabled(true)
+	cfg := utils.GetTlsConfig()
+	if len(cfg.Certificates) == 0 {
+		return fmt.Errorf("utils.GetTlsConfig loaded no certificates after TLS init")
+	}
+	return nil
+}
+
 const (
 	cassandraConfigLocation   = "/etc/cassandra/cassandra.yaml"
 	createDatabaseV3          = "/api/v3/dbaas/test_namespace/databases"
@@ -869,10 +913,18 @@ func setupTlsTestEnvironment(t *testing.T) {
 // certificate does in a real cluster.
 func generateDnsOnlyCertificate(t *testing.T) (certPEM, keyPEM []byte) {
 	t.Helper()
-
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	certPEM, keyPEM, err := buildDnsOnlyCert()
 	require.NoError(t, err)
+	return certPEM, keyPEM
+}
 
+// buildDnsOnlyCert is the error-returning equivalent of generateDnsOnlyCertificate,
+// usable from TestMain where *testing.T is not available.
+func buildDnsOnlyCert() (certPEM, keyPEM []byte, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "cassandra-test-cn"},
@@ -884,16 +936,17 @@ func generateDnsOnlyCertificate(t *testing.T) (certPEM, keyPEM []byte) {
 		IsCA:                  true,
 		DNSNames:              []string{tlsMockHostname},
 	}
-
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	require.NoError(t, err)
-
+	if err != nil {
+		return nil, nil, err
+	}
 	keyDER, err := x509.MarshalECPrivateKey(key)
-	require.NoError(t, err)
-
+	if err != nil {
+		return nil, nil, err
+	}
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	return certPEM, keyPEM
+	return certPEM, keyPEM, nil
 }
 
 // startTLSCQLMock starts the in-process CQL mock behind a TLS listener and returns its

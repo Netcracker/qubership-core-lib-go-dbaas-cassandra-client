@@ -38,6 +38,12 @@ func afterAll() {
 }
 
 func TestMain(m *testing.M) {
+	// initTlsForTestBinary must run before any test: it primes utils.GetTlsConfig
+	// with a valid certificate so that tests calling dbaasbase.NewDbaaSPool do not
+	// freeze the utils TLS config in a cert-less state before the TLS tests run.
+	if err := initTlsForTestBinary(); err != nil {
+		panic("TLS pre-test init failed: " + err.Error())
+	}
 	beforeAll()
 	exitCode := m.Run()
 	afterAll()
