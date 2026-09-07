@@ -3,15 +3,25 @@ package cassandradbaas
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +36,7 @@ import (
 	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
 	"github.com/netcracker/qubership-core-lib-go/v3/security"
 	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
+	"github.com/netcracker/qubership-core-lib-go/v3/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -544,10 +555,15 @@ func serveCQLMock(conn net.Conn, done <-chan struct{}, failFirstCheck bool, chec
 		case 0x0B: // REGISTER -> READY
 			cqlWriteReadyFrame(conn, respVersion, stream)
 		case 0x07: // QUERY
-			q := strings.TrimSpace(cqlReadLongString(body))
-			if strings.Contains(strings.ToLower(q), "system.local") {
+			q := strings.ToLower(strings.TrimSpace(cqlReadLongString(body)))
+			switch {
+			case strings.HasPrefix(q, "use "):
+				// gocql sends USE whenever the cluster config carries a keyspace.
+				// An empty Rows frame here would fail with a protocol error.
+				cqlWriteSetKeyspaceFrame(conn, respVersion, stream, q[len("use "):])
+			case strings.Contains(q, "system.local"):
 				cqlWriteSystemLocalFrame(conn, respVersion, stream)
-			} else {
+			default:
 				cqlWriteEmptyRowsFrame(conn, respVersion, stream)
 			}
 		case 0x09: // PREPARE -> PREPARED
@@ -647,7 +663,7 @@ func cqlWriteSystemLocalFrame(conn net.Conn, version byte, stream uint16) {
 	var body bytes.Buffer
 	binary.Write(&body, binary.BigEndian, int32(2))      // kind = Rows
 	binary.Write(&body, binary.BigEndian, int32(0x0001)) // flags = Global_tables_spec
-	binary.Write(&body, binary.BigEndian, int32(5))      // columns_count
+	binary.Write(&body, binary.BigEndian, int32(6))      // columns_count
 	cqlShortString(&body, "system")
 	cqlShortString(&body, "local")
 	cqlShortString(&body, "host_id")
@@ -661,6 +677,10 @@ func cqlWriteSystemLocalFrame(conn net.Conn, version byte, stream uint16) {
 	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // list element type: varchar
 	cqlShortString(&body, "partitioner")
 	binary.Write(&body, binary.BigEndian, uint16(0x000D)) // varchar
+	// rpc_address gives hosts rebuilt from ring discovery a valid connect address.
+	// Without it gocql discards the host before it is ever dialled.
+	cqlShortString(&body, "rpc_address")
+	binary.Write(&body, binary.BigEndian, uint16(0x0010)) // inet
 	binary.Write(&body, binary.BigEndian, int32(1))       // rows_count = 1
 	binary.Write(&body, binary.BigEndian, int32(16))      // host_id: 16-byte UUID
 	body.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
@@ -669,6 +689,15 @@ func cqlWriteSystemLocalFrame(conn net.Conn, version byte, stream uint16) {
 	binary.Write(&body, binary.BigEndian, int32(4)) // tokens: empty list (4-byte length prefix)
 	binary.Write(&body, binary.BigEndian, int32(0)) // element count = 0
 	cqlWriteBytes(&body, []byte("org.apache.cassandra.dht.Murmur3Partitioner"))
+	cqlWriteBytes(&body, net.ParseIP(tlsMockNodeAddress).To4()) // rpc_address
+	cqlWriteFrame(conn, version, 0x08, stream, body.Bytes())
+}
+
+// cqlWriteSetKeyspaceFrame answers a USE statement with a SetKeyspace result.
+func cqlWriteSetKeyspaceFrame(conn net.Conn, version byte, stream uint16, keyspace string) {
+	var body bytes.Buffer
+	binary.Write(&body, binary.BigEndian, int32(3)) // kind = SetKeyspace
+	cqlShortString(&body, strings.Trim(keyspace, `"`))
 	cqlWriteFrame(conn, version, 0x08, stream, body.Bytes())
 }
 
@@ -708,4 +737,223 @@ func cqlWriteFrame(conn net.Conn, version, opcode byte, stream uint16, body []by
 	binary.BigEndian.PutUint32(frame[5:9], uint32(len(body)))
 	copy(frame[9:], body)
 	conn.Write(frame) //nolint:errcheck
+}
+
+const (
+	// tlsMockHostname is the contact point the session is opened with. gocql
+	// resolves contact points through DNS before any TLS happens, so this has to be
+	// a name that genuinely resolves on the machine running the test.
+	// It is also the only name present in the mock server certificate SAN.
+	tlsMockHostname = "localhost"
+	// tlsMockNodeAddress is both the address the mock listens on and the rpc_address
+	// it reports in system.local. gocql actually dials it, so it cannot be an
+	// arbitrary IP: the TCP connection must succeed for the TLS name verification
+	// to be reached at all.
+	tlsMockNodeAddress = "127.0.0.1"
+)
+
+// TestCreateNewSession_TlsVerificationUsesContactPointHostname reproduces the original
+// production failure.
+//
+// gocql opens the control connection using the DNS contact point, but then rediscovers
+// cluster members through system.local / system.peers, where nodes are identified by IP
+// only. A HostInfo built from ring discovery has no hostname, so HostnameAndPort() falls
+// back to the bare IP. When SslOptions carry no ServerName, gocql copies that IP into
+// tls.Config.ServerName and crypto/tls verifies it against the certificate IP SANs
+// instead of the DNS SANs. A service certificate carrying only a DNS SAN is therefore
+// rejected, every per-node handshake fails, the pool stays empty and no session is built.
+//
+// Without the fix this test fails with an x509 hostname mismatch for 127.0.0.1.
+// With ServerName pinned to the contact point it passes.
+func TestCreateNewSession_TlsVerificationUsesContactPointHostname(t *testing.T) {
+	setupTlsTestEnvironment(t)
+
+	done := make(chan struct{})
+	defer close(done)
+
+	port := startTLSCQLMock(t, done)
+
+	classifier := map[string]interface{}{"scope": "service"}
+	client := &cassandraDbClient{
+		clusterConfig: gocql.NewCluster(),
+		dbaasClient:   &tlsDbaasClientStub{port: port},
+		params: model.DbParams{
+			Classifier: func(context.Context) map[string]interface{} { return classifier },
+		},
+	}
+	// Initial host lookup must stay enabled: the ring discovery step is exactly what
+	// replaces the DNS contact point with a bare IP and triggers the bug.
+	client.clusterConfig.DisableInitialHostLookup = false
+	client.clusterConfig.NumConns = 1
+	client.clusterConfig.ConnectTimeout = 5 * time.Second
+	client.clusterConfig.Timeout = 5 * time.Second
+
+	sessionRaw, err := client.createNewSession(context.Background(), classifier)()
+	require.NoError(t, err,
+		"session must be created: the certificate has to be verified against the contact point hostname, not against the IP discovered from system.local")
+
+	session, ok := sessionRaw.(*gocql.Session)
+	require.True(t, ok, "createNewSession must return a *gocql.Session")
+	t.Cleanup(session.Close)
+	require.False(t, session.Closed(), "session must have at least one live connection in the pool")
+
+	require.NotNil(t, client.clusterConfig.SslOpts,
+		"SslOpts must be set for a logical db advertising tls=true")
+	require.Equal(t, tlsMockHostname, client.clusterConfig.SslOpts.Config.ServerName,
+		"ServerName must be pinned to the contact point; otherwise gocql substitutes the discovered node IP and hostname verification fails")
+}
+
+// TestTlsHandshake_EmptyServerNameFallsBackToDialedIp pins down the crypto/tls rule the
+// fix relies on, independently of gocql internals: an empty ServerName makes the client
+// verify the dialed address, and a certificate carrying only DNS SANs cannot satisfy an
+// IP literal.
+func TestTlsHandshake_EmptyServerNameFallsBackToDialedIp(t *testing.T) {
+	setupTlsTestEnvironment(t)
+
+	done := make(chan struct{})
+	defer close(done)
+
+	address := fmt.Sprintf("%s:%d", tlsMockNodeAddress, startTLSCQLMock(t, done))
+
+	// Empty ServerName: crypto/tls derives it from the address, i.e. the IP literal.
+	failing := utils.GetTlsConfig()
+	require.Empty(t, failing.ServerName, "utils.GetTlsConfig must not pre-set ServerName")
+	conn, err := tls.Dial("tcp", address, failing)
+	if err == nil {
+		conn.Close()
+		t.Fatal("handshake unexpectedly succeeded: a DNS-only certificate must not validate against an IP literal")
+	}
+	require.Contains(t, err.Error(), "certificate",
+		"the handshake must fail on certificate verification, not on transport")
+
+	// Same certificate, same address, but verification is directed at the DNS name.
+	working := utils.GetTlsConfig()
+	working.ServerName = tlsMockHostname
+	secured, err := tls.Dial("tcp", address, working)
+	require.NoError(t, err, "handshake must succeed once ServerName matches the DNS SAN")
+	require.NoError(t, secured.Close())
+}
+
+// tlsTestEnvOnce guards the shared TLS setup: utils caches its config in a package level
+// sync.Once, so the certificate files are read exactly once per test binary.
+var tlsTestEnvOnce sync.Once
+
+// setupTlsTestEnvironment writes the certificate files utils.GetTlsConfig expects and
+// switches the shared utils config into TLS mode. The load is forced while the files
+// still exist, after which the temporary directory can be removed: everything utils
+// needs is already held in memory.
+func setupTlsTestEnvironment(t *testing.T) {
+	t.Helper()
+	tlsTestEnvOnce.Do(func() {
+		certPEM, keyPEM := generateDnsOnlyCertificate(t)
+
+		dir, err := os.MkdirTemp("", "cassandra-tls-test")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.TlsCrt), certPEM, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.TlsKey), keyPEM, 0o600))
+		// The certificate is self-signed, so it doubles as its own CA.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.CaCrt), certPEM, 0o600))
+
+		require.NoError(t, os.Setenv(utils.TlsPathEnv, dir))
+		utils.SetTlsEnabled(true)
+
+		require.NotNil(t, utils.GetTlsConfig(), "TLS config must load from the generated certificate files")
+	})
+}
+
+// generateDnsOnlyCertificate builds a self-signed certificate whose SAN contains a DNS
+// name and nothing else. The absent IP SAN is the point: it is what makes verification
+// against a bare IP literal fail, exactly like the cert-manager issued service
+// certificate does in a real cluster.
+func generateDnsOnlyCertificate(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "cassandra-test-cn"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{tlsMockHostname},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+// startTLSCQLMock starts the in-process CQL mock behind a TLS listener and returns its
+// port. The server presents the very same key pair the client trusts, so the only thing
+// that can break the handshake is the name being verified.
+func startTLSCQLMock(t *testing.T, done <-chan struct{}) int {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", tlsMockNodeAddress+":0")
+	require.NoError(t, err)
+
+	tlsListener := tls.NewListener(listener, &tls.Config{
+		Certificates: utils.GetTlsConfig().Certificates,
+		MinVersion:   tls.VersionTLS12,
+	})
+	t.Cleanup(func() { tlsListener.Close() })
+
+	var checkFailed atomic.Bool
+	go func() {
+		for {
+			conn, acceptErr := tlsListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go serveCQLMock(conn, done, false, &checkFailed)
+		}
+	}()
+
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+// tlsDbaasClientStub returns a logical db that asks for a secured connection and
+// advertises its contact point by DNS name, the way DBaaS does in a real cluster.
+type tlsDbaasClientStub struct {
+	port int
+}
+
+func (c *tlsDbaasClientStub) GetOrCreateDb(
+	context.Context,
+	string,
+	map[string]interface{},
+	rest.BaseDbParams,
+) (*basemodel.LogicalDb, error) {
+	return &basemodel.LogicalDb{
+		ConnectionProperties: map[string]interface{}{
+			"keyspace":      testContainerKeyspace,
+			"contactPoints": []interface{}{tlsMockHostname},
+			"port":          float64(c.port),
+			"username":      testContainerUser,
+			"password":      testContainerPassword,
+			"tls":           true,
+		},
+	}, nil
+}
+
+func (c *tlsDbaasClientStub) GetConnection(
+	context.Context,
+	string,
+	map[string]interface{},
+	rest.BaseDbParams,
+) (map[string]interface{}, error) {
+	return map[string]interface{}{"password": testContainerPassword}, nil
 }
