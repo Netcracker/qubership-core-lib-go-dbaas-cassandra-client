@@ -2,6 +2,7 @@ package cassandradbaas
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"time"
 
@@ -21,10 +22,18 @@ type CassandraDbClient interface {
 }
 
 type cassandraDbClient struct {
-	clusterConfig  *gocql.ClusterConfig
-	dbaasClient    dbaasbase.DbaaSClient
-	cassandraCache *cache.DbaaSCache
-	params         model.DbParams
+	clusterConfig     *gocql.ClusterConfig
+	dbaasClient       dbaasbase.DbaaSClient
+	cassandraCache    *cache.DbaaSCache
+	params            model.DbParams
+	tlsConfigProvider func() *tls.Config
+}
+
+func (c *cassandraDbClient) getTlsConfig() *tls.Config {
+	if c.tlsConfigProvider != nil {
+		return c.tlsConfigProvider()
+	}
+	return utils.GetTlsConfig()
 }
 
 func (c *cassandraDbClient) GetSession(ctx context.Context) (*gocql.Session, error) {
@@ -85,9 +94,15 @@ func (c *cassandraDbClient) createNewSession(ctx context.Context, classifier map
 		}
 		if tls, ok := logicalDb.ConnectionProperties["tls"].(bool); ok && tls {
 			logger.Infof("Connection to cassandra db with classifier %+v will be secured", classifier)
-			c.clusterConfig.SslOpts = &gocql.SslOptions{
-				Config: utils.GetTlsConfig(),
+
+			tlsConfig := c.getTlsConfig()
+			if len(contactPoints) > 0 {
+				// gocql re-dials nodes discovered via system.peers by their IP and, when ServerName is
+				// empty, puts that IP into it. The cassandra cert has DNS SANs only, so pin ServerName
+				// to the contact point.
+				tlsConfig.ServerName = contactPoints[0]
 			}
+			c.clusterConfig.SslOpts = &gocql.SslOptions{Config: tlsConfig}
 		}
 
 		c.clusterConfig.Hosts = contactPoints
