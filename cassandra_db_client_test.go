@@ -19,9 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,57 +34,12 @@ import (
 	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
 	"github.com/netcracker/qubership-core-lib-go/v3/security"
 	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
-	"github.com/netcracker/qubership-core-lib-go/v3/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
-
-// initTlsForTestBinary generates a self-signed certificate, writes it to a
-// temporary directory, points utils at that directory, enables TLS and forces
-// utils.GetTlsConfig to load the certificate into memory.  The temporary
-// directory is removed immediately afterwards: the loaded certificate is
-// retained in memory by the utils package for the rest of the binary run.
-//
-// Must be called from TestMain before m.Run so that utils.configOnce fires with
-// tlsEnabled=true. Any test that calls dbaasbase.NewDbaaSPool (→ NewDbaasRestClient
-// → utils.GetClient → utils.GetTlsConfig) would otherwise freeze the config with no
-// certificates, causing the TLS mock handshake to fail.
-func initTlsForTestBinary() error {
-	certPEM, keyPEM, err := buildDnsOnlyCert()
-	if err != nil {
-		return err
-	}
-	dir, err := os.MkdirTemp("", "cassandra-tls-init")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-
-	for _, f := range []struct {
-		name string
-		data []byte
-	}{
-		{utils.TlsCrt, certPEM},
-		{utils.TlsKey, keyPEM},
-		{utils.CaCrt, certPEM}, // self-signed: cert doubles as its own CA
-	} {
-		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o600); err != nil {
-			return err
-		}
-	}
-	if err := os.Setenv(utils.TlsPathEnv, dir); err != nil {
-		return err
-	}
-	utils.SetTlsEnabled(true)
-	cfg := utils.GetTlsConfig()
-	if len(cfg.Certificates) == 0 {
-		return fmt.Errorf("utils.GetTlsConfig loaded no certificates after TLS init")
-	}
-	return nil
-}
 
 const (
 	cassandraConfigLocation   = "/etc/cassandra/cassandra.yaml"
@@ -804,12 +757,10 @@ const (
 // instead of the DNS SANs. A service certificate carrying only a DNS SAN is therefore
 // rejected, every per-node handshake fails, the pool stays empty and no session is built.
 func TestCreateNewSession_TlsVerificationUsesContactPointHostname(t *testing.T) {
-	setupTlsTestEnvironment(t)
-
 	done := make(chan struct{})
 	defer close(done)
 
-	port := startTLSCQLMock(t, done)
+	port, clientTLSConfig := startTLSCQLMock(t, done)
 
 	classifier := map[string]interface{}{"scope": "service"}
 	client := &cassandraDbClient{
@@ -818,6 +769,7 @@ func TestCreateNewSession_TlsVerificationUsesContactPointHostname(t *testing.T) 
 		params: model.DbParams{
 			Classifier: func(context.Context) map[string]interface{} { return classifier },
 		},
+		tlsConfigProvider: func() *tls.Config { return clientTLSConfig.Clone() },
 	}
 	// Initial host lookup must stay enabled: the ring discovery step is exactly what
 	// replaces the DNS contact point with a bare IP and triggers the bug.
@@ -846,16 +798,16 @@ func TestCreateNewSession_TlsVerificationUsesContactPointHostname(t *testing.T) 
 // verify the dialed address, and a certificate carrying only DNS SANs cannot satisfy an
 // IP literal.
 func TestTlsHandshake_EmptyServerNameFallsBackToDialedIp(t *testing.T) {
-	setupTlsTestEnvironment(t)
-
 	done := make(chan struct{})
 	defer close(done)
 
-	address := fmt.Sprintf("%s:%d", tlsMockNodeAddress, startTLSCQLMock(t, done))
+	port, clientTLSConfig := startTLSCQLMock(t, done)
+	address := fmt.Sprintf("%s:%d", tlsMockNodeAddress, port)
 
-	// Empty ServerName: crypto/tls derives it from the address, i.e. the IP literal.
-	failing := utils.GetTlsConfig()
-	require.Empty(t, failing.ServerName, "utils.GetTlsConfig must not pre-set ServerName")
+	// Empty ServerName: crypto/tls derives it from the dialed address, i.e. the IP literal.
+	// A certificate carrying only DNS SANs cannot satisfy an IP literal — handshake must fail.
+	failing := clientTLSConfig.Clone()
+	require.Empty(t, failing.ServerName)
 	conn, err := tls.Dial("tcp", address, failing)
 	if err == nil {
 		conn.Close()
@@ -865,51 +817,11 @@ func TestTlsHandshake_EmptyServerNameFallsBackToDialedIp(t *testing.T) {
 		"the handshake must fail on certificate verification, not on transport")
 
 	// Same certificate, same address, but verification is directed at the DNS name.
-	working := utils.GetTlsConfig()
+	working := clientTLSConfig.Clone()
 	working.ServerName = tlsMockHostname
 	secured, err := tls.Dial("tcp", address, working)
 	require.NoError(t, err, "handshake must succeed once ServerName matches the DNS SAN")
 	require.NoError(t, secured.Close())
-}
-
-// tlsTestEnvOnce guards the shared TLS setup: utils caches its config in a package level
-// sync.Once, so the certificate files are read exactly once per test binary.
-var tlsTestEnvOnce sync.Once
-
-// setupTlsTestEnvironment writes the certificate files utils.GetTlsConfig expects and
-// switches the shared utils config into TLS mode. The load is forced while the files
-// still exist, after which the temporary directory can be removed: everything utils
-// needs is already held in memory.
-func setupTlsTestEnvironment(t *testing.T) {
-	t.Helper()
-	tlsTestEnvOnce.Do(func() {
-		certPEM, keyPEM := generateDnsOnlyCertificate(t)
-
-		dir, err := os.MkdirTemp("", "cassandra-tls-test")
-		require.NoError(t, err)
-		defer os.RemoveAll(dir)
-
-		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.TlsCrt), certPEM, 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.TlsKey), keyPEM, 0o600))
-		// The certificate is self-signed, so it doubles as its own CA.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, utils.CaCrt), certPEM, 0o600))
-
-		require.NoError(t, os.Setenv(utils.TlsPathEnv, dir))
-		utils.SetTlsEnabled(true)
-
-		require.NotNil(t, utils.GetTlsConfig(), "TLS config must load from the generated certificate files")
-	})
-}
-
-// generateDnsOnlyCertificate builds a self-signed certificate whose SAN contains a DNS
-// name and nothing else. The absent IP SAN is the point: it is what makes verification
-// against a bare IP literal fail, exactly like the cert-manager issued service
-// certificate does in a real cluster.
-func generateDnsOnlyCertificate(t *testing.T) (certPEM, keyPEM []byte) {
-	t.Helper()
-	certPEM, keyPEM, err := buildDnsOnlyCert()
-	require.NoError(t, err)
-	return certPEM, keyPEM
 }
 
 // buildDnsOnlyCert is the error-returning equivalent of generateDnsOnlyCertificate,
@@ -943,17 +855,27 @@ func buildDnsOnlyCert() (certPEM, keyPEM []byte, err error) {
 	return certPEM, keyPEM, nil
 }
 
-// startTLSCQLMock starts the in-process CQL mock behind a TLS listener and returns its
-// port. The server presents the very same key pair the client trusts, so the only thing
-// that can break the handshake is the name being verified.
-func startTLSCQLMock(t *testing.T, done <-chan struct{}) int {
+// startTLSCQLMock starts the in-process CQL mock behind a TLS listener. It generates
+// a fresh self-signed certificate, uses it for the server, and returns the port and a
+// client-side *tls.Config whose RootCAs trust that certificate. The only thing that can
+// break the handshake is the ServerName the caller puts (or omits) in the client config.
+func startTLSCQLMock(t *testing.T, done <-chan struct{}) (int, *tls.Config) {
 	t.Helper()
+
+	certPEM, keyPEM, err := buildDnsOnlyCert()
+	require.NoError(t, err)
+
+	serverCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	require.NoError(t, err)
+
+	rootCAs := x509.NewCertPool()
+	require.True(t, rootCAs.AppendCertsFromPEM(certPEM))
 
 	listener, err := net.Listen("tcp", tlsMockNodeAddress+":0")
 	require.NoError(t, err)
 
 	tlsListener := tls.NewListener(listener, &tls.Config{
-		Certificates: utils.GetTlsConfig().Certificates,
+		Certificates: []tls.Certificate{serverCert},
 		MinVersion:   tls.VersionTLS12,
 	})
 	t.Cleanup(func() { tlsListener.Close() })
@@ -969,7 +891,7 @@ func startTLSCQLMock(t *testing.T, done <-chan struct{}) int {
 		}
 	}()
 
-	return listener.Addr().(*net.TCPAddr).Port
+	return listener.Addr().(*net.TCPAddr).Port, &tls.Config{RootCAs: rootCAs}
 }
 
 // tlsDbaasClientStub returns a logical db that asks for a secured connection and

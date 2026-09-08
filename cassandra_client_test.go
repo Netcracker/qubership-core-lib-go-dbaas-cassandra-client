@@ -5,15 +5,15 @@ import (
 	"os"
 	"testing"
 
-	. "github.com/netcracker/qubership-core-lib-go/v3/const"
-	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
-	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
-	"github.com/netcracker/qubership-core-lib-go/v3/security"
-	"github.com/netcracker/qubership-core-lib-go/v3/context-propagation/baseproviders/tenant"
-	"github.com/netcracker/qubership-core-lib-go/v3/context-propagation/ctxmanager"
 	dbaasbase "github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3/model/rest"
 	"github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3/model"
+	"github.com/netcracker/qubership-core-lib-go/v3/configloader"
+	. "github.com/netcracker/qubership-core-lib-go/v3/const"
+	"github.com/netcracker/qubership-core-lib-go/v3/context-propagation/baseproviders/tenant"
+	"github.com/netcracker/qubership-core-lib-go/v3/context-propagation/ctxmanager"
+	"github.com/netcracker/qubership-core-lib-go/v3/security"
+	"github.com/netcracker/qubership-core-lib-go/v3/serviceloader"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -38,12 +38,6 @@ func afterAll() {
 }
 
 func TestMain(m *testing.M) {
-	// initTlsForTestBinary must run before any test: it primes utils.GetTlsConfig
-	// with a valid certificate so that tests calling dbaasbase.NewDbaaSPool do not
-	// freeze the utils TLS config in a cert-less state before the TLS tests run.
-	if err := initTlsForTestBinary(); err != nil {
-		panic("TLS pre-test init failed: " + err.Error())
-	}
 	beforeAll()
 	exitCode := m.Run()
 	afterAll()
