@@ -796,9 +796,6 @@ const (
 	tlsMockNodeAddress = "127.0.0.1"
 )
 
-// TestCreateNewSession_TlsVerificationUsesContactPointHostname reproduces the original
-// production failure.
-//
 // gocql opens the control connection using the DNS contact point, but then rediscovers
 // cluster members through system.local / system.peers, where nodes are identified by IP
 // only. A HostInfo built from ring discovery has no hostname, so HostnameAndPort() falls
@@ -806,9 +803,6 @@ const (
 // tls.Config.ServerName and crypto/tls verifies it against the certificate IP SANs
 // instead of the DNS SANs. A service certificate carrying only a DNS SAN is therefore
 // rejected, every per-node handshake fails, the pool stays empty and no session is built.
-//
-// Without the fix this test fails with an x509 hostname mismatch for 127.0.0.1.
-// With ServerName pinned to the contact point it passes.
 func TestCreateNewSession_TlsVerificationUsesContactPointHostname(t *testing.T) {
 	setupTlsTestEnvironment(t)
 
