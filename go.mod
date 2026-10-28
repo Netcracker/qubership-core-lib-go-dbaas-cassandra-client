@@ -3,7 +3,7 @@ module github.com/netcracker/qubership-core-lib-go-dbaas-cassandra-client/v3
 go 1.26.5
 
 require (
-	github.com/gocql/gocql v1.7.0
+	github.com/gocql/gocql/v2 v2.1.2
 	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.8.3
 	github.com/netcracker/qubership-core-lib-go/v3 v3.15.3
 	github.com/stretchr/testify v1.12.1
