@@ -4,8 +4,8 @@ go 1.26.5
 
 require (
 	github.com/gocql/gocql v1.7.0
-	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.8.4
-	github.com/netcracker/qubership-core-lib-go/v3 v3.15.4
+	github.com/netcracker/qubership-core-lib-go-dbaas-base-client/v3 v3.9.0
+	github.com/netcracker/qubership-core-lib-go/v3 v3.16.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.45.0
 )
@@ -30,7 +30,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-pkgz/expirable-cache/v3 v3.1.1 // indirect
+	github.com/go-pkgz/expirable-cache/v3 v3.2.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/snappy v0.0.3 // indirect
@@ -73,7 +73,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
